@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>核保小帮手 3.0</title>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<title>核保小助手 5.0</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
@@ -133,7 +132,7 @@
 </head>
 <body>
 <header>
-  <h1>🛡️ 核保小帮手 3.0</h1>
+  <h1>🛡️ 核保小助手 5.0</h1>
   <div class="sub">投保前先查一查 · 覆盖 566 种疾病</div>
   <div class="intro">上传报告、粘贴文字、对话聊天，三种方式任您选</div>
 </header>
@@ -170,6 +169,7 @@
 </div>
 
 <script src="data.js"></script>
+<script src="material.js"></script>
 <script>
 /* ============== 规则数据（注入点） ============== */
 
@@ -666,9 +666,18 @@ function extractIndicators(region){
   if(!sm&&!dm){ const mm=region.match(/(\d{2,3})\s*[\/／]\s*(\d{2,3})/); if(mm){ sm=[0,mm[1]]; dm=[0,mm[2]]; } }
   if(sm) ind["收缩压"]=parseFloat(sm[1]);
   if(dm) ind["舒张压"]=parseFloat(dm[1]);
+  if(ind["收缩压"]!=null||ind["舒张压"]!=null){
+    const _sbp=ind["收缩压"], _dbp=ind["舒张压"]; let _grade=null;
+    if((_sbp!=null&&_sbp>=180)||(_dbp!=null&&_dbp>=110)) _grade="3级";
+    else if((_sbp!=null&&_sbp>=160)||(_dbp!=null&&_dbp>=100)) _grade="2级";
+    else if((_sbp!=null&&_sbp>=140)||(_dbp!=null&&_dbp>=90)) _grade="1级";
+    else if((_sbp!=null&&_sbp>=120)||(_dbp!=null&&_dbp>=80)) _grade="正常高值";
+    if(_grade) ind["血压分级"]=_grade;
+  }
   let nm=region.match(/结节[^。，,；;）)]*?(\d+(?:\.\d+)?)\s*(?:cm|毫米|mm|MM|CM|厘米)/);
   if(nm) ind["结节最大直径"]=parseFloat(nm[1]);
   let tm=region.match(/(TI-RADS|BI-RADS|Lung-RADS|分级)\s*[:：]?\s*(\d)\s*[级类]/i); if(tm) ind["分级"]=tm[2]+(/类/i.test(tm[0])?"类":"级");
+  if(!tm){ const tm2=region.match(/结节\s*[:：]?\s*([1-6])\s*类/); if(tm2) ind["分级"]=tm2[1]+"类"; }
   if(/多发|多个|数枚|两枚|多枚/.test(region)) ind["结节数量"]="多发";
   if(/已手术|手术切除|术后/.test(region)) ind["手术史"]="是";
   if(/恶性|癌变|ca |CA /.test(region)) ind["恶性"]="是";
@@ -679,6 +688,12 @@ function extractIndicators(region){
   if(/磨玻璃|GGO|ggo/i.test(region)) ind["影像描述"]="磨玻璃";
   else if(/无钙化|边界清晰|形态规则|边缘光整|回声均匀|形态规整|包膜完整/.test(region)) ind["影像描述"]="倾向良性";
   else if(/边界模糊|微小钙化|纵横比|毛刺|形态不规则|分叶|可疑|钙化/.test(region)) ind["影像描述"]="可疑特征";
+  if(/肺结节/.test(region)){
+    if(/(?:随访|复查)[^。]{0,30}(?:无明显?变化|未见变化|稳定|无增大)/.test(region)) ind["肺结节随访"]="稳定";
+    else ind["肺结节随访"]="首次发现";
+  }
+  if(/肝功能[^。]*?(?:正常|未见异常|无异常)/.test(region)) ind["肝功能"]="正常";
+  else if(/肝功能[^。]*?(?:异常|升高|损害)|转氨酶升高/.test(region)) ind["肝功能"]="异常";
   return ind;
 }
 
@@ -783,10 +798,15 @@ function evaluateValue(userVal, cond){
 function evalBP(cond, indicators){
   const parts=cond.split(/[，,；;]|\s+且\s+|\s+或\s+/);
   const hasAnd=cond.indexOf("且")>=0; const subs=[];
-  for(const p of parts){ const m=p.match(/(收缩压|舒张压)\s*([≥≤＞＜<>])\s*(\d+(?:\.\d+)?)/); if(m) subs.push([m[1],m[2],parseFloat(m[3])]); }
+  for(const p of parts){ const m=p.match(/(收缩压|舒张压)\s*([≥≤＞＜<>])?\s*(\d+(?:\.\d+)?)?(?:\s*[-~—到至]\s*(\d+(?:\.\d+)?))?/); if(m&&m[3]!=null) subs.push([m[1],m[2],parseFloat(m[3]),m[4]!=null?parseFloat(m[4]):null]); }
   if(!subs.length) return false;
   const res=[];
-  for(const [name,op,target] of subs){ const uv=indicators[name]; if(uv==null) return false; const v=extractNum(uv); if(v==null) return false; res.push(compare(v,op,target)); }
+  for(const [name,op,low,high] of subs){ const uv=indicators[name]; if(uv==null){ if(hasAnd) return false; continue; } const v=extractNum(uv); if(v==null){ if(hasAnd) return false; continue; }
+    if(op) res.push(compare(v,op,low));
+    else if(high!=null) res.push(v>=low&&v<=high);
+    else res.push(false);
+  }
+  if(!res.length) return false;
   return hasAnd?res.every(x=>x):res.some(x=>x);
 }
 function condMatches(cond, info){
@@ -829,7 +849,7 @@ function matchRules(rules, info, diseaseName){
   // 严格匹配
   const full=cands.filter(r=>ruleMatches(r, info));
   if(full.length===1) return {status:"full_match", rule:full[0], missing:null};
-  if(full.length>1){ full.sort((a,b)=>strictScore(b)-strictScore(a)); return {status:"full_match", rule:full[0], missing:null}; }
+  if(full.length>1){ full.sort((a,b)=> (b.conditions.length-a.conditions.length) || (strictScore(b)-strictScore(a))); return {status:"full_match", rule:full[0], missing:null}; }
   // best-effort：信息不全时，选 满足最多条件 > 良性路径(非拒保/延期) > 风险最宽松 的规则作初步参考
   let best=null, bestRank=null;
   const rankOf=(r)=>{
@@ -857,20 +877,23 @@ function matchRules(rules, info, diseaseName){
 
 function ageBucket(age){ if(age==null) return null; if(age<=40) return "18-40"; if(age<=45) return "41-45"; if(age<=50) return "46-50"; if(age<=55) return "51-55"; return "56+"; }
 function financialCheck(info){
-  const out=[]; let need=false;
   const ra=info.riskAmount, ai=info.annualIncome, ap=info.annualPremium;
-  if(ra!=null){
-    if(ra>1500000){ out.push("您投保的累计风险保额已超过 150 万元，按通用财务规则须提供《财务问卷》，并附投、被保险人收入证明或资产证明；同时被保人需由调查员进行面见生存调查。"); need=true; }
-    else if(ra>1000000){ out.push("您投保的累计风险保额已超过 100 万元，按通用财务规则须提供《财务问卷》；如核保需要，还须提供收入证明或资产证明。"); need=true; }
+  const hasFin=(ra!=null||ai!=null||ap!=null);
+  if(hasFin){
+    const out=[]; let need=false;
+    if(ra!=null){
+      if(ra>1500000){ out.push("累计风险保额已超过 150 万元：须提供《财务问卷》并附收入/资产证明，被保人需面见生存调查。"); need=true; }
+      else if(ra>1000000){ out.push("累计风险保额已超过 100 万元：须提供《财务问卷》，如核保需要还须提供收入证明或资产证明。"); need=true; }
+    }
+    if(ai!=null && ap!=null){
+      if(ap>ai*0.3){ out.push("年交保费已超过年收入 30%：通常触发投保人财务问卷。"); need=true; }
+      else if(ap>ai*0.2){ out.push("年交保费已超过年收入 20%：可能触发缴费能力评估，建议复核。"); need=true; }
+    }
+    out.push("保险金额较高时还可能涉及额外核保流程：累计保额超过免体检额度需安排体检（体检结果将纳入健康核保评估）；超高保额可能涉及临时分保，时效相对较长。");
+    out.push("以上仅为通用门槛参考。财务核保还会结合您在同业（其他保险公司）的累计风险保额综合评估，最终以承保保司审核为准。");
+    return {items:out, need:true, detail:true};
   }
-  if(ai!=null && ap!=null){
-    if(ap>ai*0.3){ out.push("投保人累计总年化保费已超过年收入的 30%，将触发投保人财务问卷。"); need=true; }
-    if(ap>ai*0.2){ out.push("年交保费已超过家庭年收入的 20%，投保适当性评估可能认定财务支付水平不匹配，建议复核缴费能力。"); need=true; }
-  }
-  if(!out.length){
-    out.push("通用财务提示：累计风险保额 > 100 万元须提供财务问卷；> 150 万元或累计医疗总日额 > 500 元须附收入/资产证明并可能触发生存调查。具体以您投保产品的投保规则及业务员星级免体检额度为准。");
-  }
-  return {items:out, need:need};
+  return {items:["核保不只评估健康状况，也会评估财务适配性——当年交保费与年收入明显不匹配、或累计风险保额较大时，通常需提供财务问卷，个别情况还可能涉及生存调查。","保险金额较高时还可能涉及额外核保流程：累计保额超过免体检额度需安排体检（体检结果将纳入健康核保评估）；超高保额可能涉及临时分保，时效相对较长。"], need:true, detail:false};
 }
 
 /* ============== 友好话术 / 症状闭环 / 展示辅助 ============== */
@@ -1249,10 +1272,10 @@ function applyCombo(perDisease){
   const hasDM=diseases.some(p=>(p.disease||"").indexOf("血糖升高")>=0||(p.label||"").indexOf("糖尿病")>=0);
   const hasNod=diseases.some(p=>/(甲状腺|乳腺|肺)结节/.test(p.disease||""));
   if(hasDM&&hasNod){ cons["医疗险"]="拒保"; cons["重疾险"]="拒保"; comboNote="根据多疾病组合规则（糖尿病 + 结节）：医疗险与重疾险均直接拒保（糖尿病主导），增额寿险结合具体产品评估。"; }
-  else if(highRisk){ cons["医疗险"]="延期（需穿刺明确病理）"; cons["重疾险"]="延期（需穿刺明确病理）"; comboNote="根据多疾病组合规则（高风险结节 4 类及以上主导）：医疗险与重疾险优先按「延期（需穿刺明确病理）」评估。"; }
+  else if(highRisk){ cons["医疗险"]="延期"; cons["重疾险"]="延期"; comboNote="根据多疾病组合规则（高风险结节 4 类及以上主导）：医疗险与重疾险按「延期（需穿刺明确病理）」评估。"; }
   const chronic=diseases.filter(p=>/(血糖升高|高血压|乙肝|结节|息肉|增生)/.test(p.disease||"")).length;
   if(diseases.length>=3&&chronic>=1){
-    multiNote="📌 您目前存在多项健康异常，核保员在综合评估时通常比单一疾病更为谨慎。\n注意事项：\n1. 症状类需明确诊断：胸闷、胸痛等属于症状，需提供心电图、心脏彩超、胸片等检查报告，明确是否为器质性疾病。\n2. 时间要求：息肉、结节等手术/切除后，部分保司要求至少3-6个月后才考虑承保。\n3. 资料准备：请尽可能提供近1-2年的完整复查报告及随访记录。\n4. 特惠机会：如遇保险公司开门红等特惠核保阶段，可尝试投保，结论可能有所放宽。";
+    multiNote="📌 您目前存在多项健康异常，核保评估通常比单一疾病更为谨慎。\n注：症状类（如胸闷、胸痛）需先提供心电图、心脏彩超等检查明确诊断；息肉、结节等术后部分保司要求满3-6个月再投保。";
   }
   let strict="标体";
   for(const k of ["医疗险","重疾险","增额寿"]){ let v=cons[k]; if(v===SPECIAL_EEV)v="标体"; if(/^转人工/.test(v)) manual=true; if(comboRisk(v)>comboRisk(strict)) strict=v; }
@@ -1794,13 +1817,13 @@ function analysisText(rule, info){
   if(isEcg){
     // 心电图异常类：正文动态带出用户原始输入词（如 T波倒置 / ST段压低），并提示为非特异性 ST-T 改变
     const w = orig ? `（${orig}）` : "";
-    base=`针对您提到的心电图异常${w}，系统识别为非特异性ST-T改变，结合您提供的基本情况（${info.age?info.age+"岁":"年龄未提供"}${info.gender?","+info.gender:""}），按行业通用核保规则，`;
+    base=`针对您提到的心电图异常${w}，系统识别为非特异性ST-T改变，按行业通用核保规则，`;
   }else{
     const dn=DISPLAY_OVERRIDE.name(rawDisease.replace(/[（(].*?[)）]/g,""));
-    base=`针对您提到的「${dn}」，结合您提供的基本情况（${info.age?info.age+"岁":"年龄未提供"}${info.gender?","+info.gender:""}），按行业通用核保规则，`;
+    base=`针对您提到的「${dn}」，按行业通用核保规则，`;
   }
   const map={
-    "通过":`该疾病在核保评估中通常可按标准体（标体）承保，结论为「通过」。建议您在投保时如实告知病史并提供近期复查资料。`,
+    "通过":`该疾病在核保评估中通常可按标准体（标体）承保，结论为「通过」。建议您在投保时如实告知病史并提供历次复查资料。`,
     "标体":`该疾病在核保评估中通常可按标准体承保，结论为「通过/标体」。`,
     "除外":`该疾病相关责任可能被「除外承保」，即保险公司承担其他责任，但与该疾病直接相关的后续治疗不在保障范围内。`,
     "转人工":`该情形需转人工核保进一步评估，核保员将结合完整病历、检查报告综合判断，最终结论以人工审核为准。`,
@@ -1818,9 +1841,15 @@ function combinedAnalysisText(perDisease, info){
     const v=dc.manual?"转人工":(dc.strictest||"标体");
     return `「${dn}」评估为${v}`;
   });
-  const ageStr=info.age?info.age+"岁":"年龄未提供";
-  const gStr=info.gender?("、"+info.gender):"";
-  return `结合您提供的基本情况（${ageStr}${gStr}），对以下疾病分别评估：${parts.join("；")}。多疾病合并时按「从严原则」取最严格结论，且任一疾病触发「转人工」即整体转人工核保。本结论为通用规则初步参考，不代表任何保险公司的正式核保决定。`;
+  const manualNames=perDisease.filter(p=>p.rule).map(p=>{
+    const dn=DISPLAY_OVERRIDE.name(p.label||p.disease);
+    const dc=diseaseConclusion(p.rule);
+    return dc.manual?(p.label||p.disease):null;
+  }).filter(Boolean).map(dn=>DISPLAY_OVERRIDE.name(dn));
+  if(manualNames.length){
+    return `因「${manualNames.join("」「")}」需人工核保，本单需整体转人工核保，由核保员结合完整病历与检查资料给出最终结论。本结论为通用规则初步参考，不代表任何保险公司的正式核保决定。`;
+  }
+  return `各项疾病已分别评估如上（见各疾病评估）。多个健康异常叠加时，核保评估通常更为谨慎，最终结论以保险公司综合评估为准。本结论为通用规则初步参考，不代表任何保险公司的正式核保决定。`;
 }
 /* 检查项目名称规范化（用于补充材料去重）：
    甲状腺超声 / 甲状腺B超 / 甲状腺彩超 → 甲状腺B超；心电图 / 动态心电图 → 心电图；心脏超声 / 心超 → 心脏彩超 … */
@@ -2060,9 +2089,9 @@ const COMMON_MATERIALS = [
   "近1-2年完整复查报告及随访记录"
 ];
 
-/* 【拒保不补信息·全局规则】三列（医疗险/重疾险/增额寿）结论全为「拒保」的病名集合。
-   依据：此类疾病补交任何材料都不改变结论，继续输出清单会误导业务员以为"补了有机会"。
-   实现：运行时从 RULES 聚合计算，不手工维护名单（规则库变动自动同步，零维护成本）。 */
+/* 【拒保说明块】三列（医疗险/重疾险/增额寿）结论全为「拒保」的病名集合。
+   用途：命中此类病时，在「建议补充的信息」上方显示「核保结论说明」块（告知结论 + 人工复核出口），
+   并保留原补充信息清单（供人工复核/转投参考）。运行时从 RULES 聚合计算，不手工维护名单。 */
 const REJECT_ALL = (function(){
   const s=new Set();
   try{
@@ -2083,6 +2112,15 @@ const REJECT_ALL = (function(){
   }catch(e){ /* RULES 未就绪时退化为空集，不影响主流程 */ }
   return s;
 })();
+// 拒保说明块开关：置 false 一键关闭说明块（不影响清单），用于细粒度回退
+const REJECT_NOTE_ENABLED = true;
+// 拒保病展示名：优先用户短名(label)；超长病名（去括号后仍 >16 字）截取首段 + 等，避免把整条规则名甩进说明块
+function _rejectDisplayName(s){
+  const n = DISPLAY_OVERRIDE.name(s);
+  if(n.length<=16) return n;
+  const seg = n.replace(/[（(].*?[)）]/g,'').split(/[、,，]/)[0];
+  return (seg && seg.length<n.length) ? seg+'等' : n.slice(0,16)+'…';
+}
 
 /* 统一编排 L1→L5，返回 [{text, src, disease}]（带来源标注，供对照测试读取） */
 function buildSupplementItems(perDisease){
@@ -2100,8 +2138,6 @@ function buildSupplementItems(perDisease){
   }
   for(const p of ruled){
     const d=p.disease||(p.rule&&p.rule.disease)||'';
-    // 【拒保不补信息】该病三列全拒保 → 不产出任何补充信息（L1/L2/L3/L4 全部跳过）
-    if(REJECT_ALL.has(d)) continue;
     // L1 定制清单（含由旧路径硬编码迁移来的甲状腺结节项、结节动态模板）
     let l1=[];
     for(const ds of DISEASE_SUPPLEMENT){ if(ds.re.test(d)) l1=l1.concat(supplementItemsOf(ds,d)); }
@@ -2129,6 +2165,168 @@ function buildSupplementItems(perDisease){
     for(const t of nm){ const x=String(t||'').trim(); if(x&&!cs.has(x)){ cs.add(x); out.push({text:x,src:'L5兜底',disease:'(兜底)'}); } }
   }
   return out;
+}
+
+/* ================================================================
+   补充材料层·新表查表（material.js，第一步运行时接入，2026-10-14）
+   —— 取代五层 buildSupplementItems 的「新新路径」，与旧路径并存。
+   开关：_useMaterialMap = true（默认）走本查表；false 秒回旧五层/旧路径（零影响）。
+   架构：4 维度 = ①globalItems(通用4条) + ②types(19类型模板) + ③diseaseMap(每病一行) + ④specialCases(独苗)
+   拒保病：type=真实类型 + isRejectAll:true，复用类型模板产材料（渲染时标"仅供复核/其他险种"）；
+           REJECT_ALL 从「拦截器」降级为「标记器」——不再拦截材料，只决定是否加说明块/指路。
+   指引确诊：type='指引确诊'（25个症状/待查病）→ 走独立路径，不给材料清单。
+   多病种：逐病查表（for 循环不短路），仅全局去重完全相同的文案，不吞第二病。
+   红线：不动 RULES / DISEASE_MAP / 匹配引擎 / 结论逻辑；material.js 为纯数据。
+   ================================================================ */
+const _useMaterialMap = true;   // 新表查表总开关：true=走 material.js 查表；false=退回旧五层/旧路径
+const _useLayeredRender = true; // 三段式渲染总开关（20261020 S3）：true=按 report/conditional/ask 三段展示；false=回退旧按病分组渲染
+/* 病内语义槽位去重：同一病内，按「用药/随访/病理/手术」四槽位去重，保留信息量最大的一条。
+   归属按「最早出现的关键词位置」判断（如"手术及病理情况"归手术槽位而非病理）。
+   未命中槽位的项仅按文字去重，保留原顺序。跨病不去重（由调用方按病分组各自独立调用）。 */
+function dedupeBySlot(items){
+  const SLOTS=[
+    { re:/用药|服药|药名|剂量/ },
+    { re:/随访|复查/ },
+    { re:/病理|活检|穿刺/ },
+    { re:/手术|住院|出院/ }
+  ];
+  function slotIdx(s){
+    let best=-1, bestPos=Infinity;
+    for(let i=0;i<SLOTS.length;i++){
+      const m=s.match(SLOTS[i].re);
+      if(m && m.index<bestPos){ best=i; bestPos=m.index; }
+    }
+    return best;
+  }
+  function score(s){
+    let sc=s.length;
+    if(/如|等|具体|历次|对比|药名|示例/.test(s)) sc+=100;   // 带示例/具体措辞的信息量更大
+    return sc;
+  }
+  const slotBest=[];         // slotIdx -> 当前保留的文本
+  const out=[];
+  const plainSeen=new Set();
+  for(const it of items){
+    const s=String(it==null?"":it).trim();
+    if(!s) continue;
+    const si=slotIdx(s);
+    if(si>=0){
+      if(slotBest[si]===undefined){
+        slotBest[si]=s; out.push(s);
+      }else if(score(s)>score(slotBest[si])){
+        const idx=out.indexOf(slotBest[si]);
+        if(idx>=0) out[idx]=s;
+        slotBest[si]=s;
+      }
+    }else{
+      if(!plainSeen.has(s)){ plainSeen.add(s); out.push(s); }
+    }
+  }
+  return out;
+}
+function materialItemsOf(ruledP){
+  const rejectNames=[]; const guideNames=[]; const groups=[];
+  const M = (typeof MATERIAL!=='undefined') ? MATERIAL : null;
+  if(!M){ return { globalItems: [], groups, rejectNames, guideNames }; }
+  // 预建索引（每病 O(1) 查表）
+  const dmIdx={}; for(const e of M.diseaseMap) dmIdx[e.disease]=e;
+  const tByName={}; for(const t of M.types) tByName[t.name]=t;
+  const sByName={}; for(const s of M.specialCases) sByName[s.disease]=s;
+  for(const p of (ruledP||[])){
+    let d=p.disease || (p.rule&&p.rule.disease) || '';
+    let e=dmIdx[d];
+    if(!e && p.label){ e=dmIdx[p.label]; if(e) d=p.label; }   // 长名占位规则兜底：如"良性肿瘤"规则 disease 为超长名，label 为短名；转人工病也需材料区（人工核保的输入）
+    if(!e) continue;                       // 仍无匹配（真正未入表）：不产材料
+    // ① 指引确诊：独立路径，不给材料清单（渲染层据 guideNames 给"建议先明确诊断"提示）
+    if(e.type==='指引确诊'){ guideNames.push(d); continue; }
+    const disp=p.label||d;
+    // ② 特例（先心4个）：独苗清单
+    if(e.type==='specialCase'){
+      const sp=sByName[d];
+      groups.push({ disease:d, displayName:disp, isReject:false, items: dedupeBySlot(sp?sp.items:[]) });
+      continue;
+    }
+    // ③ fallback（真无类型）：仅通用 4 条，无专项
+    if(e.type==='fallback'){
+      if(e.isRejectAll) rejectNames.push(d);
+      groups.push({ disease:d, displayName:disp, isReject:!!e.isRejectAll, items:[] });
+      continue;
+    }
+    // ④ 真实类型模板（含拒保病复用模板）
+    const tpl=tByName[e.type];
+    if(!tpl){ if(e.isRejectAll) rejectNames.push(d); continue; }
+    const raw=[];
+    for(const it of tpl.items){
+      let s=it;
+      if(e.type==='慢病型' && it==='化验或检查报告（含核心指标数值及测量记录）' && e.metrics) s=e.metrics;
+      if(e.imagingItem && /^(影像|妇科B超|专科检查)/.test(it)) s=e.imagingItem;
+      else if(e.type==='结节型' && it==='影像报告（含分级）') s=e.imagingItem || '相关影像或专科检查报告（含影像描述及历次复查对比）';
+      raw.push(s);
+    }
+    if(e.type==='占位型' && e.organ) raw.push(e.organ);
+    if(e.extraItems) for(const x of e.extraItems) raw.push(x);
+    if(e.excludeItems && e.excludeItems.length) for(let i=raw.length-1;i>=0;i--) if(e.excludeItems.includes(raw[i])) raw.splice(i,1);
+    if(e.isRejectAll) rejectNames.push(d);
+    groups.push({ disease:d, displayName:disp, isReject:!!e.isRejectAll, items: dedupeBySlot(raw) });
+  }
+  return { globalItems: M.globalItems.slice(), groups, rejectNames, guideNames };
+}
+
+/* ===== 批次B：跨病材料合并展示（纯渲染层，不改 material.js / materialItemsOf 输出） =====
+   R1a 全病共有条目（trim后逐字节相等）→ 合并一条，不加尾缀（组标题统一注明"请分别提供"）
+   R1a' 部分病共有（>=2病且非全病）→ 合并一条 + （X/Y分别提供）尾缀；>3器官 → （各部位分别提供）
+   R1b 单病独有条目 → 保留 + （器官）尾缀；文本已含该器官词则不重复加
+   R3 顺序稳定：公共条按首次出现序在前，部分共有次之，单病独有条按病序在后
+   R4 病内去重先行：入参 items 已经过 dedupeBySlot，本函数不做病内去重 */
+function mergeGroupsForDisplay(groups){
+  try{
+    if(!Array.isArray(groups) || groups.length<2) return null;
+    function organOf(d){
+      const s=String(d==null?"":d).trim();
+      const st=s.replace(/(结节|息肉|结石|囊肿|炎|瘤)$/,"");
+      return st||s;
+    }
+    const organs=[]; let hasReject=false;
+    for(const g of groups){
+      hasReject=hasReject||!!g.isReject;
+      const o=organOf(g.disease);
+      if(o && organs.indexOf(o)<0) organs.push(o);
+    }
+    const total=groups.length;
+    const counter={}; const textOrgans={};
+    for(const g of groups){
+      const o=organOf(g.disease);
+      for(const it of (g.items||[])){
+        const s=String(it==null?"":it).trim(); if(!s) continue;
+        counter[s]=(counter[s]||0)+1;
+        if(!textOrgans[s]) textOrgans[s]=[];
+        if(textOrgans[s].indexOf(o)<0) textOrgans[s].push(o);
+      }
+    }
+    const common=[], partial=[], diff=[];
+    const seenC={}, seenP={}, seenD={};
+    for(const g of groups){
+      for(const it of (g.items||[])){
+        const s=String(it==null?"":it).trim(); if(!s) continue;
+        const c=counter[s]||0;
+        if(c===total){
+          if(!seenC[s]){ seenC[s]=1; common.push(s); }
+        }else if(c>=2){
+          if(!seenP[s]){
+            seenP[s]=1;
+            const os=textOrgans[s]||[];
+            const tag = os.length>3 ? "（各部位分别提供）" : "（"+os.join("/")+"分别提供）";
+            partial.push(s+tag);
+          }
+        }else{
+          if(seenD[s]) continue; seenD[s]=1;
+          const o=organOf(g.disease);
+          diff.push(s.indexOf(o)>=0 ? s : s+"（"+o+"）");
+        }
+      }
+    }
+    return { common, partial, diff, organs, hasReject };
+  }catch(e){ return null; }
 }
 
 /* ============== DeepSeek API（统一调用：同域代理 → 直连 → 兜底） ============== */
@@ -2189,20 +2387,21 @@ async function callDeepSeek(perDisease, info, analysisEl){
   });
   if(!lines.length) return;
   const sys="你是资深保险核保专家。请用专业但通俗易懂的语言（称呼用户为'您'），基于给出的多疾病及投保险种初步结论，写一段核保分析：先一句话点明综合结论，再说明核保关注点，最后给一句投保建议。不超过220字。文末说明：以上为初步参考，非最终承保决定。";
-  const user=`被保人：${info.age||"年龄未提供"}岁${info.gender?","+info.gender:""}\n投保险种意向：${info.intent||"重疾险"}\n各疾病初步结论：\n${lines.join("\n")}`;
+  const user=`被保人：${info.age?info.age+"岁":""}${info.gender?","+info.gender:""}\n投保险种意向：${info.intent||"重疾险"}\n各疾病初步结论：\n${lines.join("\n")}`;
   const txt=await callDeepSeekAPI([{role:"system",content:sys},{role:"user",content:user}],{temperature:0.6,max_tokens:460});
   if(txt){ analysisEl.textContent=txt+"\n\n（以上由 AI 辅助生成，仅供参考，最终以保险公司正式核保为准）"; }
 }
 
+/* 【已删除 20261020 收尾批】renderKeyItemsHtml 置顶块函数（调用方已于 S3 退役） */
 /* ============== 渲染 ============== */
 const chat=document.getElementById("chat");
 function scroll(){ chat.scrollTop=chat.scrollHeight; }
 function addUser(text){ const r=document.createElement("div"); r.className="row user"; r.innerHTML=`<div class="bubble"></div>`; r.querySelector(".bubble").textContent=text; chat.appendChild(r); scroll(); }
-function tag(v){ return `<span class="tag t-${v}">${v}</span>`; }
+function tag(v){ v=String(v==null?"":v).trim(); const m=v.match(/^(拒保|延期|除外|转人工|加费|标体|通过)/); return `<span class="tag t-${m?m[1]:"unk"}">${escapeHtml(v)}</span>`; }
 function renderCard(res, info){
   const perDisease=res.perDisease; if(!perDisease||!perDisease.length) return;
   const combined=res.combined||{manual:false, strict:"标体"};
-  // 是否命中「糖尿病 + 增额寿特惠阶段可尝试」需追加特别提示
+  // 是否命中「糖尿病 + 增额寿阶段性放宽政策可尝试」需追加特别提示
   const specialPresent = perDisease.some(p=>p.rule && ((p.rule.disease||"").indexOf("血糖升高")>=0 || (p.label||"").indexOf("糖尿病")>=0) && (p.rule.conclusions||{})["增额寿"]===SPECIAL_EEV);
   const notes=noduleNotes(perDisease);   // 结节转人工话术
   const wrap=document.createElement("div"); wrap.className="row ai";
@@ -2228,8 +2427,10 @@ function renderCard(res, info){
   }).join("")}</div>`;
   const confTag = confidenceTag(res);
   if(confTag) html += `<div class="conf-line">${confTag}</div>`;
-  // 多疾病时保留逐疾病明细（单疾病与三列结论重复，省略）
-  if(perDisease.filter(p=>p.rule).length>1){
+  // 多疾病时：结论不一致才显示逐疾病明细（全一致则三列结论已表达，省略重复区）
+  const _ruledAll = perDisease.filter(p=>p.rule);
+  const _conclOf = (p)=>{ const dc=diseaseConclusion(p.rule); return dc.manual?"转人工":(dc.strictest||"标体"); };
+  if(_ruledAll.length>1 && _ruledAll.some(p=>_conclOf(p)!==_conclOf(_ruledAll[0]))){
     html+=`<div class="sec-title">各疾病评估</div><div class="eval-block">`;
     html+=perDisease.map(p=>{
       const dn=DISPLAY_OVERRIDE.name(p.label||p.disease);
@@ -2249,9 +2450,9 @@ function renderCard(res, info){
   }
   // 结节转人工话术（需求一）
   notes.forEach(n=>{ html+=`<div class="fin-box nodule-note"><div class="f-title">👨‍💼 转人工核保提示</div><div>${n}</div></div>`; });
-  // 糖尿病 + 增额寿特惠阶段可尝试：追加特别提示
+  // 糖尿病 + 增额寿阶段性放宽政策可尝试：追加特别提示
   if(specialPresent){
-    html+=`<div class="fin-box special-note"><div class="f-title">💡 增额寿险特别提示</div><div>• 📌 增额寿险需结合具体保额判断：若累计寿险保额 ≤ 50万，在保司开门红等特惠阶段有机会以非标条件承保；若超过50万，建议先咨询保司核保确认条件。</div></div>`;
+    html+=`<div class="fin-box special-note"><div class="f-title">💡 增额寿险特别提示</div><div>• 📌 增额寿险需结合具体保额判断：若累计寿险保额 ≤ 50万，遇保司阶段性核保放宽政策（如开门红等）有机会以非标条件承保；若超过50万，建议先咨询保司核保确认条件。</div></div>`;
   }
   // 多疾病组合规则说明（需求五-3）
   if(res.comboNote){
@@ -2265,77 +2466,151 @@ function renderCard(res, info){
     ? combinedAnalysisText(perDisease, info)
     : (perDisease[0].rule ? analysisText(perDisease[0].rule, info) : "");
   html+=`<div class="sec-title">核保分析</div><div class="analysis ds-target">${analysisInit}</div>`;
-  // 结节参考提示：甲状腺结节 / 乳房结节（不含肺结节，肺结节走独立 Lung-RADS 分级标准，不适用此话术）
-  const noduleNames = perDisease.map(p=>p.disease||"");
-  const hasThyroidBreastNodule = noduleNames.some(d=>/甲状腺.*结节|乳腺.*结节|乳房.*结节/.test(d));
-  const hasLungNodule = noduleNames.some(d=>/肺结节/.test(d));
-  if(hasThyroidBreastNodule && !hasLungNodule){
-    html+=`<div class="fin-box" style="background:#f0f9ff;border-color:#bae6fd;color:#075985;margin-top:10px;"><div class="f-title">📌 核保结论（参考）</div><div>• 甲状腺结节 / 乳房结节，分类3类及以下、直径＜1cm，重疾险和医疗险通常除外，寿险标体<br>• 结节结论受大小、分级、手术及随访情况影响；如存在多病种情形，需综合评估，具体以保险公司正式核保结论为准。</div></div>`;
+  // 医疗险多病综合预警（20261020 S5）：非标体（除外/转人工/拒保/延期）≥3 时提示
+  const _nonStd = perDisease.filter(p=>p.rule).map(p=>{
+    const dc=diseaseConclusion(p.rule);
+    return dc.manual?"转人工":(dc.strictest||"标体");
+  }).filter(v=>v!=="标体"&&v!=="通过");
+  if(_nonStd.length>=3){
+    html+=`<div class="fin-box" style="background:#fffbeb;border-color:#fcd34d;color:#92400e;margin-top:10px;"><div class="f-title">⚠️ 综合风险评估提示</div><div>您目前输入了 ${_nonStd.length} 项健康异常。在医疗险实务中，多项异常叠加会明显增加保司综合风控的强度，可能面临直接拒保或延期。可考虑防癌医疗险等核保相对宽松的险种，或拆分险种分别尝试投保。</div></div>`;
   }
+  // 【已退役 20261020 S5】结节参考提示块：多病串台且信息由结论区+三段材料承载
   // 处置建议
   if(combined.manual){
-    html+=`<div class="advice manual">⚠️ <b>处置建议：</b>任一疾病触发「转人工」处置，建议提交人工核保，由核保员综合评估病史、检查报告与投保方案后给出最终结论。</div>`;
+    html+=`<div class="advice manual">⚠️ <b>处置建议：</b>综合评估从严，任一疾病需转人工则整单转人工，由核保员结合完整资料给出最终结论。请如实告知并提供上述材料。</div>`;
   }else{
-    html+=`<div class="advice">✅ <b>处置建议：</b>综合各疾病评估，结论从严（拒保 &gt; 延期 &gt; 加费/除外 &gt; 标体）。投保时请如实告知全部病史，并提供完整病历与近期复查资料。</div>`;
+    html+=`<div class="advice">✅ <b>处置建议：</b>综合各疾病评估，结论从严（拒保 &gt; 延期 &gt; 加费/除外 &gt; 标体）。投保时请如实告知全部病史，并提供完整病历与历次复查资料。</div>`;
   }
   // 建议补充的信息（优先级：①按疾病定制清单 DISEASE_SUPPLEMENT → ②补充信息知识库 KB → ③原有合并逻辑）
   // 含肝/宫颈/结节及乳腺增生由 KB 自行排除；命中①时 KB 让位，走③（定制清单在③内 concat）
   const _ruledP = perDisease.filter(p=>p.rule);
-  let supplementItems = null;
-  // 【新架构 v2·批次1】仅当「有命中规则」且「全部疾病都在白名单内」时走新路径；
-  //   否则走完全不变的旧路径（下一整段），保证白名单外零影响。
-  const _useNew = SUPPLEMENT_ROLLOUT.enabled && _ruledP.length>0
-    && _ruledP.every(p=>SUPPLEMENT_ROLLOUT.diseases.has(p.disease));
-  if(_useNew){
-    supplementItems = buildSupplementItems(perDisease);
+  // 【拒保说明块】共用（含新中立指路）：三列全拒保病 → 显示说明块 + 指路（不再单独输出"投保方向建议"块）
+  const _rejectNames = (REJECT_NOTE_ENABLED && _ruledP.length>0)
+    ? _ruledP.filter(p=>REJECT_ALL.has(p.disease||(p.rule&&p.rule.disease)||''))
+        .map(p=>_rejectDisplayName(p.label||p.disease||''))
+    : [];
+  if(_rejectNames.length){
+    const _rn = '您输入的「'+_rejectNames.join('、')+'」';
+    html+=`<div class="fin-box" style="background:#f8fafc;border-color:#e2e8f0;color:#475569;margin-top:10px;"><div class="f-title">核保结论说明</div><div>${_rn}当前核保结论为拒保。<br>当前结论基于您已提交的信息得出。如对结论有异议，可申请人工核保复核。</div><div style="margin-top:6px;">不同险种、不同公司的核保尺度存在差异。通常，年金险等储蓄型险种的核保尺度相对宽松，但具体能否投保以保险公司核保结论为准；如需进一步了解，可咨询核保专员或查看公司当期核保支持政策。</div></div>`;
+  }
+  // 【定论字段置顶】已退役（20261020 S3 三段式改造）：定论字段并入三段材料区，renderKeyItemsHtml 函数体暂留待清理
+  // 【补充材料层】material.js 查表分支（与旧路径完全隔离，true 分支完全跳过旧路径）
+  if(_useMaterialMap && _ruledP.length>0){
+    console.log('[核保小助手·补充材料] _useMaterialMap=true → 走 material.js 查表分支（跳过旧五层/collectMaterials/naturalMissing/旧COMMON）');
+    const _mm = materialItemsOf(_ruledP);
+    // 指引确诊（症状/待查病：不给材料清单，改"先明确诊断"引导）
+    if(_mm.guideNames.length){
+      const _gn = _mm.guideNames.map(n=>_rejectDisplayName(n)).join('、');
+      html+=`<div class="sec-title">建议补充的信息</div><div class="guide-box">🔍 您输入的「${_gn}」属于待进一步明确的症状或检查异常，建议先到相应科室明确诊断后，再以具体疾病名称咨询，以便匹配对应核保规则并给出更精准的结论。</div>`;
+    }
+    if(_useLayeredRender){
+      // ===== 三段式渲染（20261020 S3）：条目按 LAYER_ASSIGN 分流 report/conditional/ask =====
+      const LAYER = (typeof LAYER_ASSIGN!=='undefined') ? LAYER_ASSIGN : {};
+      const _flat=[]; const _srcOf={};
+      (_mm.groups||[]).forEach(g=>{
+        const dn=_rejectDisplayName(g.displayName||g.disease);
+        (g.items||[]).forEach(it=>{
+          if(!_srcOf[it]){ _srcOf[it]=[]; _flat.push(it); }
+          if(dn && !_srcOf[it].includes(dn)) _srcOf[it].push(dn);
+        });
+      });
+      (_mm.globalItems||[]).forEach(it=>{ if(!_srcOf[it]){ _srcOf[it]=[]; _flat.push(it); } });   // 通用条并入三段，无病源
+      const _layers={report:[],conditional:[],ask:[]};
+      // 跨源槽位合并（20261020）：同层内，通用条命中槽位且该槽位已有病级条→保留病级条吞通用条；病级条删除后通用条自动回归（保底）
+      const _SLOTS=[/用药|服药|药名|剂量/,/随访|复查/,/病理|活检|穿刺/,/手术|住院|出院/,/确诊时间/];
+      const _slotOf=t=>{ for(let i=0;i<_SLOTS.length;i++){ if(_SLOTS[i].test(t)) return i; } return -1; };
+      const _slotHasDisease={report:{},conditional:{},ask:{}};
+      _flat.forEach(it=>{
+        const layer=LAYER[it]||'ask';
+        const srcs=_srcOf[it]||[];
+        if(srcs.length>0){ const sl=_slotOf(it); if(sl>=0) _slotHasDisease[layer][sl]=true; }
+      });
+      _flat.forEach(it=>{
+        const layer=LAYER[it]||'ask';
+        let txt=it;
+        const srcs=_srcOf[it]||[];
+        if(srcs.length===0){
+          const sl=_slotOf(it);
+          if(sl>=0 && _slotHasDisease[layer][sl]) return;   // 同层同槽已有病级条→通用条让位（保底：病级条删除后本条自动回归）
+        }
+        if(srcs.length===1 && (_mm.groups||[]).length>1 && srcs[0]) txt+='（'+srcs[0]+'）';   // 单病源且多病组合→标注病名（R1b 语义保留）
+        _layers[layer].push(txt);
+      });
+      const _sec=(title,arr,note)=> arr.length? `<div class="guide-box"><div class="f-title">${title}</div>${note||''}<ul class="mat-list">${arr.map(m=>`<li>${escapeHtml(m)}</li>`).join('')}</ul></div>` : '';
+      const _askNote='<div style="color:#64748b;font-size:12px;margin:2px 0 6px;">以下为病史相关信息，投保时健康告知通常也会涉及，建议提前与客户确认口径。</div>';
+      const _parts = _sec('📋 请提供以下检查报告', _layers.report)
+                   + _sec('📋 如有，请一并提供', _layers.conditional)
+                   + _sec('📋 请简要告知', _layers.ask, _askNote);
+      const _total = _layers.report.length+_layers.conditional.length+_layers.ask.length;
+      if(_total>0){
+        if((_ruledP.length>3)||(_total>15)){
+          // 折叠保险丝：病种数>3 或 条目数>15 → 目录式折叠
+          html+=`<div class="sec-title">建议补充的信息</div><details class="guide-box"><summary style="cursor:pointer;font-weight:600;">📋 共 ${_total} 项（涉及 ${_ruledP.length} 个疾病，点击展开）</summary><div style="margin-top:8px;">${_parts}</div></details>`;
+        }else{
+          html+=`<div class="sec-title">建议补充的信息</div>`+_parts;
+        }
+      }
+    }else{
+      // ===== 旧渲染（按病分组，_useLayeredRender=false 回退通道） =====
+      if(_mm.globalItems.length){
+        html+=`<div class="sec-title">建议补充的信息</div><div class="guide-box">📋 通用基础信息<ul class="mat-list">${_mm.globalItems.map(m=>`<li>${escapeHtml(m)}</li>`).join("")}</ul></div>`;
+      }
+      const _mergedG = mergeGroupsForDisplay(_mm.groups);
+      if(_mergedG){
+        const _gNames = _mm.groups.map(g=>escapeHtml(_rejectDisplayName(g.displayName||g.disease))).join("/");
+        const _rjTag = _mergedG.hasReject ? "（仅供复核/其他险种参考）" : "";
+        const _lis = [].concat(_mergedG.common, _mergedG.partial, _mergedG.diff).map(m=>`<li>${escapeHtml(m)}</li>`).join("");
+        html+=`<div class="guide-box">📋 ${_gNames} 专项材料${_rjTag}（如涉及多个部位，请分别提供）<ul class="mat-list">${_lis}</ul></div>`;
+      }else{
+        for(const g of _mm.groups){
+          if(!g.items || !g.items.length) continue;
+          const _dn = escapeHtml(_rejectDisplayName(g.displayName||g.disease));
+          const _title = g.isReject ? `${_dn} 专项材料（仅供复核/其他险种参考）` : `${_dn} 专项材料`;
+          html+=`<div class="guide-box">📋 ${_title}<ul class="mat-list">${g.items.map(m=>`<li>${escapeHtml(m)}</li>`).join("")}</ul></div>`;
+        }
+      }
+    }
   }else{
-    // ===== 旧路径（批次1期间原样保留，不做任何改动） =====
-    const _hasCustom = _ruledP.length===1 && DISEASE_SUPPLEMENT.some(d=>d.re.test(_ruledP[0].disease||""));
-    if(!_hasCustom && _ruledP.length===1){
-      const _kb = SUPPLEMENT_KB.getSupplementItems(_ruledP[0].disease);
-      if(_kb && _kb.length){ supplementItems = mergeSupplementItems(perDisease, _kb); }
+    console.log('[核保小助手·补充材料] _useMaterialMap=false → 走旧路径（buildSupplementItems/collectMaterials）');
+    // ===== 旧路径（原样保留，供 _useMaterialMap=false 回退） =====
+    let supplementItems = null;
+    if(SUPPLEMENT_ROLLOUT.enabled && _ruledP.every(p=>SUPPLEMENT_ROLLOUT.diseases.has(p.disease))){
+      supplementItems = buildSupplementItems(perDisease);
+    }else{
+      const _hasCustom = _ruledP.length===1 && DISEASE_SUPPLEMENT.some(d=>d.re.test(_ruledP[0].disease||""));
+      if(!_hasCustom && _ruledP.length===1){
+        const _kb = SUPPLEMENT_KB.getSupplementItems(_ruledP[0].disease);
+        if(_kb && _kb.length){ supplementItems = mergeSupplementItems(perDisease, _kb); }
+      }
+      if(supplementItems===null){
+        let mats=collectMaterials(perDisease);
+        // 【待废弃】甲状腺结节旧硬编码 —— 已迁移至 DISEASE_SUPPLEMENT
+        if(perDisease.some(p=>/甲状腺.*结节/.test(p.disease||""))){
+          mats=mats.concat(["病理/穿刺报告","甲状腺B超报告","手术病理报告（如有手术史）","甲状腺功能检查（FT3/FT4/TSH）"]);
+        }
+        if(perDisease.some(p=>/乙肝|慢性迁延性肝炎|慢性活动性肝炎|其他慢性肝炎/.test(p.disease||""))){
+          mats=mats.concat(["乙肝两对半（乙肝五项）","肝功能检查（ALT/AST）","腹部B超（肝脏形态、纤维化/肝硬化）","乙肝DNA（病毒载量）","AFP（甲胎蛋白）"]);
+        }
+        if(perDisease.some(p=>isLiverDisease(p.disease))){
+          mats=mats.filter(x=>!/腹部B超|腹部超声|腹部彩超/.test(x));
+          mats.push("腹部彩超");
+        }
+        for(const _ds of DISEASE_SUPPLEMENT){
+          const _mp = perDisease.find(p=>_ds.re.test(p.disease||""));
+          if(_mp) mats=mats.concat(supplementItemsOf(_ds, _mp.disease||""));
+        }
+        mats=dedupeCheckItems(mats);
+        supplementItems = mergeSupplementItems(perDisease, mats);
+      }
     }
-    if(supplementItems===null){
-      let mats=collectMaterials(perDisease);
-      // 【待废弃】甲状腺结节旧硬编码 —— 已迁移至 DISEASE_SUPPLEMENT
-      // 保留原因：旧路径回退用。批次4全量切换完成后统一删除。
-      // 甲状腺结节：固定4项补充材料清单（追加，不覆盖其他疾病产出）
-      if(perDisease.some(p=>/甲状腺.*结节/.test(p.disease||""))){
-        mats=mats.concat(["病理/穿刺报告","甲状腺B超报告","手术病理报告（如有手术史）","甲状腺功能检查（FT3/FT4/TSH）"]);
-      }
-      // 乙肝相关疾病（乙肝病毒携带者/急性乙肝/大三阳/小三阳/慢性肝炎）：固定5项补充检查（不含丙肝/丁肝/甲肝/戊肝/自身免疫/药物性/酒精性肝炎）
-      if(perDisease.some(p=>/乙肝|慢性迁延性肝炎|慢性活动性肝炎|其他慢性肝炎/.test(p.disease||""))){
-        mats=mats.concat(["乙肝两对半（乙肝五项）","肝功能检查（ALT/AST）","腹部B超（肝脏形态、纤维化/肝硬化）","乙肝DNA（病毒载量）","AFP（甲胎蛋白）"]);
-      }
-      // 肝病类：统一补充「腹部彩超」（已有腹部B超类表述则先移除再补，避免同一检查重复出现）
-      if(perDisease.some(p=>isLiverDisease(p.disease))){
-        mats=mats.filter(x=>!/腹部B超|腹部超声|腹部彩超/.test(x));
-        mats.push("腹部彩超");
-      }
-      // 按疾病精确定制的补充清单（第③件首批）：追加，不覆盖
-      for(const _ds of DISEASE_SUPPLEMENT){
-        const _mp = perDisease.find(p=>_ds.re.test(p.disease||""));
-        if(_mp) mats=mats.concat(supplementItemsOf(_ds, _mp.disease||""));
-      }
-      // 同一检查项只保留一条（各清单 concat 后可能出现重复检查项）
-      mats=dedupeCheckItems(mats);
-      supplementItems = mergeSupplementItems(perDisease, mats);
-    }
-    // 【拒保不补信息】命中规则的病名全部属于「三列全拒保」→ 清空清单（本轮 A 方案：全部拒保才清空）
-    //   部分拒保（如 甲状腺结节+肺癌）本轮保守保留清单，待"按病拆"改造后按病过滤，记待办。
-    if(_ruledP.length>0 && _ruledP.every(p=>REJECT_ALL.has(p.disease||(p.rule&&p.rule.disease)||''))){
-      supplementItems = [];
+    if(supplementItems.length){
+      const _mats = (typeof supplementItems[0]==='string') ? supplementItems : supplementItems.map(x=>x.text);
+      const _guide = _rejectNames.length ? '如申请人工核保复核或转投其他险种，可准备以下信息（仅供复核/其他险种参考）：' : '为了更精准评估，建议补充以下信息：';
+      html+=`<div class="sec-title">建议补充的信息</div><div class="guide-box">📋 ${_guide}<ul class="mat-list">${_mats.map(m=>`<li>${escapeHtml(m)}</li>`).join("")}</ul></div>`;
     }
     // ===== 旧路径结束 =====
   }
-  if(supplementItems.length){
-    const _mats = (typeof supplementItems[0]==='string') ? supplementItems : supplementItems.map(x=>x.text);
-    html+=`<div class="sec-title">建议补充的信息</div><div class="guide-box">📋 为了更精准评估，建议补充以下信息：<ul class="mat-list">${_mats.map(m=>`<li>${m}</li>`).join("")}</ul></div>`;
-  }
-  // 投保方向建议：仅"拒保"结论时显示（标体/除外等结论本身已清晰，不显示）
-  if(combined.strict==="拒保"){
-    html+=`<div class="sec-title">投保方向建议</div><div class="advice dir">🧭 建议咨询专业保险顾问，或考虑年金险等核保宽松的产品。</div>`;
-  }
+  // （旧"投保方向建议"块已删除；拒保指路已并入上方"核保结论说明"块）
   // 风险改善指引（需求十五）：拒保 / 延期 等严格结论时自动追加
   if(combined.strict==="拒保"||combined.strict==="延期"){
     const ri=riskImprovement(perDisease, false);
@@ -2346,15 +2621,10 @@ function renderCard(res, info){
   if(res.psycho){ html+=psychoNote(); }
   // 财务核保提示
   const fin=res.fin||financialCheck(info);
-  html+=`<div class="sec-title">财务核保提示</div><div class="fin-box ${fin.need?'need':''}"><div class="f-title">${fin.need?'⚠ 需关注':'💡 温馨提示'}</div>`+fin.items.map(x=>`<div>• ${x}</div>`).join("")+`</div>`;
+  html+=`<div class="sec-title">核保流程及财务提示</div><div class="fin-box need"><div class="f-title">⚠ 核保流程及财务提示</div>`+fin.items.map(x=>`<div>• ${x}</div>`).join("")+`</div>`;
   // 通用规则差异提示
-  html+=`<div class="fin-box" style="background:#fff7ed;border-color:#fed7aa;color:#9a3412;margin-top:10px;">⚠️ 以上结论基于通用核保规则。各保险公司具体产品可能存在差异，请以实际投保时的产品规则为准。</div>`;
-  // 险种核保关注要点
-  html+=`<div class="sec-title">险种核保关注要点</div><div class="focus-box">
-    <div><b>医疗险</b>：关注既往症、近期检查异常、近期手术、慢性病用药。</div>
-    <div><b>重疾险</b>：关注家族史、结节分级、高血压分级等重度异常。</div>
-    <div><b>增额寿</b>：关注收入与保额的匹配度、职业风险等级。</div>
-  </div>`;
+  html+=`<div class="fin-box" style="background:#fff7ed;border-color:#fed7aa;color:#9a3412;margin-top:10px;">⚠️ 以上结论基于通用核保规则。各保险公司具体产品可能存在差异，请以实际投保时的产品规则为准。<br>如提交资料不足或时效较久，保险公司可能安排体检或复检，以核保通知为准。</div>`;
+  // 【已退役 20261020 S5】险种核保关注要点块：解释性冗余，材料清单已行动化承载
   if(res.status==="reference"){
     html+=`<div class="hint">当前信息不足以给出确定结论，以上为基于现有情况的初步参考。上述「建议补充的信息」提示了核保还需确认的关键问题，补全后结论可能变化。</div>`;
   }
@@ -2697,7 +2967,7 @@ async function analyze(text){
   const combo=applyCombo(perDisease);
   let comboNote="", multiNote="";
   if(combo){ combined=combo.combined; comboNote=combo.comboNote; multiNote=combo.multiNote; }
-  // 三列展示用：逐险种合并结论（多疾病用 applyCombo 的 cons；单疾病直接用该规则结论，保留增额寿特惠等原值）
+  // 三列展示用：逐险种合并结论（多疾病用 applyCombo 的 cons；单疾病直接用该规则结论，保留增额寿 SPECIAL_EEV 等原值）
   const ruled = perDisease.filter(p=>p.rule);
   let cons = combo && combo.cons ? combo.cons : (ruled.length===1 ? ruled[0].rule.conclusions : {});
   const status = perDisease.some(p=>p.status==="reference") ? "reference" : "full_match";
@@ -2736,6 +3006,7 @@ function renderCheckAsk(text, checks, info){
 }
 async function send(){
   const v=document.getElementById("msg").value.trim();
+  if(v.length>LONG_TEXT_LEN && v.split(/[，,、;；\n]/).length<=1){ runExtract({text:v}); return; }   // 长文本且非预填病名串 → AI 抽取
   if(!v) return;
   addUser(v); document.getElementById("msg").value="";
   // 模拟思考
@@ -2745,36 +3016,74 @@ async function send(){
 function quick(el){ document.getElementById("msg").value=el.textContent.trim(); send(); }
 function sendText(t){ document.getElementById("msg").value=t; send(); }
 
-/* OCR */
+/* AI 抽取（20261020 V5.1）：deepseek-flash 多模态抽取（文字/图片统一管道），替代 Tesseract OCR + 正则扫描 */
+const EXTRACT_PROMPT = '你是核保助理的信息抽取引擎。仔细阅读这份医学报告，提取：1) illnesses：医生明确诊断的疾病（出院诊断/印象为准，辅助检查与诊疗经过中明确提及的异常也可纳入；忽略否定语境如"未触及""无""否认"、模板占位如"据实填写"、医嘱建议语境如"如出现…及时就诊"）；2) abnormalLabs：异常化验/检查指标（名称+数值，如 CA125 升高、尿潜血阳性）；3) followup：医生建议的复查时间要求。只输出JSON：{"illnesses":[],"abnormalLabs":[],"followup":""}，不要输出其他文字。';
+const LONG_TEXT_LEN = 60;
+async function extractWithFlash(payload){
+  const content=[];
+  if(payload.imageDataUrl) content.push({type:"image_url", image_url:{url:payload.imageDataUrl}});
+  if(payload.text) content.push({type:"text", text:payload.text});
+  content.push({type:"text", text:EXTRACT_PROMPT});
+  const r=await fetch("/api/deepseek", { method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ model:"deepseek-flash", messages:[{role:"user",content}], temperature:0.2, max_tokens:2000 }) });
+  if(!r.ok) throw new Error("API "+r.status);
+  const d=await r.json();
+  let t=(d.choices&&d.choices[0]&&d.choices[0].message&&d.choices[0].message.content||"").trim();
+  const m=t.match(/\{[\s\S]*\}/);            // JSON 容错：容忍 markdown 代码块包裹
+  if(!m) throw new Error("empty");
+  let j; try{ j=JSON.parse(m[0]); }catch(e){ throw new Error("parse"); }
+  return { illnesses:(j.illnesses||[]).map(String).filter(Boolean),
+           abnormalLabs:(j.abnormalLabs||[]).map(String).filter(Boolean),
+           followup:String(j.followup||"") };
+}
+function showExtractResult(ext){
+  if(ext.illnesses.length){
+    document.getElementById("msg").value = ext.illnesses.join("、");
+  }
+  const t=document.createElement("div"); t.className="row ai";
+  let inner='<div class="bubble typing">✅ 已按 AI 识别结果预填（请核对后点击发送）：</div>';
+  const card=document.createElement("div"); card.className="card";
+  let html='<div class="sec-title">识别到的疾病</div><div class="ocr-text">'+escapeHtml(ext.illnesses.join("、")||"（未识别到明确疾病）")+'</div>';
+  if(ext.abnormalLabs.length){
+    html+='<div class="fin-box" style="background:#fffbeb;border-color:#fcd34d;color:#92400e;margin-top:8px;"><div class="f-title">⚠️ 识别到异常指标</div><div>'+ext.abnormalLabs.map(x=>escapeHtml(x)).join("；")+'。核保可能关注，建议告知时一并说明。</div></div>';
+  }
+  if(ext.followup) html+='<div style="color:#64748b;font-size:12.5px;margin-top:6px;">医生建议：'+escapeHtml(ext.followup)+'</div>';
+  html+='<div style="color:#64748b;font-size:12.5px;margin-top:6px;">⚠ 如有遗漏或识别错误，请直接在输入框修改补充后发送。</div>';
+  card.innerHTML=html;
+  const box=document.createElement("div"); box.className="row ai";
+  card.appendChild((()=>{ const b=document.createElement("button"); b.className="btn btn-send"; b.style.marginTop="10px"; b.textContent="确认无误，生成核保建议"; b.onclick=()=>{ box.remove(); analyze(document.getElementById("msg").value); }; return b; })());
+  card.appendChild;
+  box.appendChild(card); chat.appendChild(box); scroll();
+}
+function extractFail(msg){
+  const t=document.createElement("div"); t.className="row ai";
+  const card=document.createElement("div"); card.className="card";
+  card.innerHTML='<div class="fin-box" style="background:#fef2f2;border-color:#fecaca;color:#991b1b;">⚠️ AI 识别失败（'+escapeHtml(msg)+'）。请直接在下方输入框手动输入疾病名称，再点击发送。<br><span style="font-size:12px;color:#b91c1c;">提示：AI 识别需在部署后的线上环境使用（本地打开的页面无服务端代理）。</span></div>';
+  card.appendChild; const box=document.createElement("div"); box.className="row ai"; box.appendChild(card); chat.appendChild(box); scroll();
+}
+async function runExtract(payload){
+  addUser(payload.imageDataUrl ? "📷 已上传报告图片（AI 识别中）" : "📋 已粘贴报告文字（AI 识别中）");
+  document.getElementById("loading").style.display="flex";
+  try{
+    const ext=await extractWithFlash(payload);
+    document.getElementById("loading").style.display="none";
+    if(!ext.illnesses.length && !ext.abnormalLabs.length){
+      extractFail("未能识别到明确的疾病或异常指标"); return;
+    }
+    showExtractResult(ext);
+  }catch(err){
+    document.getElementById("loading").style.display="none";
+    extractFail(err.message||"未知错误");
+  }
+}
 function uploadImg(){ document.getElementById("fileInput").click(); }
 function onImgSelected(e){
   const f=e.target.files[0]; if(!f) return;
-  // 点击上传后立即显示「正在识别…」
-  document.getElementById("loading").style.display="flex";
-  const rd=new FileReader(); rd.onload=ev=>{
-    const url=ev.target.result;
-    const prog=document.getElementById("prog");
-    if(typeof Tesseract==="undefined"){ alert("OCR 组件未加载，请检查网络连接（首次使用需联网下载中文识别模型）。"); document.getElementById("loading").style.display="none"; return; }
-    Tesseract.recognize(f, 'chi_sim', { logger:m=>{ if(m.status==="recognizing text") prog.style.width=(m.progress*100).toFixed(0)+"%"; } })
-      .then(({data})=>{
-        document.getElementById("loading").style.display="none";
-        const txt=data.text.trim();
-        addUser("📷 已上传报告图片（识别中）");
-        const t=document.createElement("div"); t.className="row ai"; t.innerHTML='<div class="bubble typing">OCR 识别结果：</div>'; 
-        const box=document.createElement("div"); box.className="row ai";
-        const card=document.createElement("div"); card.className="card";
-        card.innerHTML=`<div class="sec-title">OCR 识别文字（请核对后系统自动提取）</div><div class="ocr-text">${escapeHtml(txt)||"（未识别到文字，请确认图片清晰度或手动粘贴）"}</div>`;
-        const btn=document.createElement("button"); btn.className="btn btn-send"; btn.style.marginTop="10px"; btn.textContent="用这段文字分析";
-        btn.onclick=()=>{ box.remove(); analyze(mergeIntent(txt)); };
-        card.appendChild(btn); box.appendChild(card); chat.appendChild(box); scroll();
-        if(txt){ analyze(mergeIntent(txt)); }
-      })
-      .catch(err=>{ document.getElementById("loading").style.display="none"; alert("识别失败："+err.message); });
-  };
+  const rd=new FileReader();
+  rd.onload=ev=>{ e.target.value=""; runExtract({imageDataUrl:ev.target.result}); };
+  rd.onerror=()=>{ extractFail("图片读取失败"); };
   rd.readAsDataURL(f);
-  e.target.value="";
 }
-function mergeIntent(txt){ return txt; }
 function escapeHtml(s){ return s.replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c])); }
 
 /* 粘贴 */
@@ -2784,6 +3093,7 @@ function doPaste(){
   const v=document.getElementById("pasteArea").value.trim();
   if(!v){ alert("请先粘贴文字内容"); return; }
   closePaste();
+  if(v.length>LONG_TEXT_LEN){ runExtract({text:v}); return; }   // 长文本/报告 → AI 抽取后预填确认
   addUser("📋 已粘贴报告文字");
   analyze(v);
 }
@@ -2792,11 +3102,11 @@ function doPaste(){
 function showWelcome(){
   const wrap=document.createElement("div"); wrap.className="row ai";
   const card=document.createElement("div"); card.className="card";
-  card.innerHTML=`<div class="disease">您好，我是核保小帮手 3.0 👋</div>
+  card.innerHTML=`<div class="disease">您好，我是核保小助手 5.0 👋</div>
     <div class="analysis">您可以通过以下方式向我咨询：
       <ul style="margin:8px 0 0 18px;line-height:1.95;">
         <li>直接输入：<b>我35岁，有甲状腺结节，想买重疾险</b></li>
-        <li>上传体检报告截图（自动 OCR 识别文字）</li>
+        <li>上传报告图片或粘贴报告文字（AI 智能识别疾病与异常指标）</li>
         <li>粘贴医院报告文字内容</li>
       </ul>
       我会结合行业通用核保规则，为您给出各险种的初步结论、核保分析与建议补充的材料。</div>`;
