@@ -2930,7 +2930,7 @@ function renderCard(res, info){
   if(res.status==="reference"){
     // 20261021 批3收敛：初判统述唯一出口——动态列出缺关键信息的病名
     const _refNames = perDisease.filter(p=>p.rule && p.status==="reference").map(p=>DISPLAY_OVERRIDE.name(p.label||p.disease));
-    const _refWho = _refNames.length ? `其中「${_refNames.map(escapeHtml).join("、")}」未提供分级等关键检查信息` : "当前提交的信息";
+    const _refWho = _refNames.length ? `其中「${_refNames.map(escapeHtml).join("、")}」未提供关键检查信息` : "当前提交的信息";
     html+=`<div class="hint">注：${_refWho}，相关结论为初步参考，补全资料后结论可能变化。</div>`;
   }
   card.innerHTML=html; wrap.appendChild(card); chat.appendChild(wrap); scroll();
