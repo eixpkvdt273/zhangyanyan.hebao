@@ -7,6 +7,7 @@ vercel/
 ├── index.html          # 核保小助手 5.0 主页面
 ├── data.js             # 疾病规则字典（566病 + 阈值规则）
 ├── material.js         # 材料清单数据（三段式材料层 LAYER_ASSIGN 在此文件）
+├── package.json        # 声明 type:module（让 api/*.js 的 ESM 写法在 Vercel 上确定可用）
 ├── api/
 │   └── deepseek.js     # 服务端代理：转发 DeepSeek 请求，密钥存环境变量
 └── README_部署.md      # 本说明
@@ -14,7 +15,7 @@ vercel/
 
 ## 一、要点（先看）
 
-- **四个文件必须齐全**：`index.html` / `data.js` / `material.js` / `api/deepseek.js`。
+- **四个文件必须齐全**：`index.html` / `data.js` / `material.js` / `api/deepseek.js`（外加 `package.json`）。
   ⚠️ **`material.js` 是 5.0 新增的必需文件**——漏传它，页面的补充材料功能会整体失效。
 - **密钥不在前端**：`index.html` 里没有任何 DeepSeek Key。Key 只存在服务端（`api/deepseek.js` 读环境变量 `DEEPSEEK_API_KEY`）。
 - 前端只调用同源的 `/api/deepseek`，因此**不存在 CORS 问题**（同域请求）。
@@ -35,6 +36,9 @@ vercel/
 ## 三、常见问题
 
 - **AI 话术没出来 / 显示"由 AI 辅助生成"但实际是默认文案**：检查 Vercel 环境变量 `DEEPSEEK_API_KEY` 是否已设置并重新部署。
+- **提示"服务端未配置密钥或代理异常"**：同上——环境变量设完必须 **Redeploy** 一次才生效。
+- **提示"图片体积过大"**：前端已自动压缩（长边 2200px / 单张目标 ≤600KB / 单次最多 3 张）；仍报错说明原图异常大，建议截图后再传。
+- **AI 识别结果不对**：先看输入气泡里显示的原文/缩略图是否就是你想要的那段（V5.1 起粘贴与上传都会回显原文），再判断是原文问题还是识别问题。
 - **页面能开但结论卡片正常**：说明规则引擎本地运行正常，仅 AI 增强未接通，属预期降级。
 - **修改页面后重新部署**：更新对应文件并重新 push / redeploy 即可（`api/deepseek.js` 一般不用改）。
 - **补充材料区空白**：检查 `material.js` 是否已上传且与 `index.html` 同目录。
